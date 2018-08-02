@@ -14,10 +14,15 @@ import java.util.concurrent.*;
  */
 public class ContentDownloader implements IContentDownloader {
 
-    private ExecutorService exService;
+    private final ExecutorService exService;
+
+    private int timeout;
+
+    private final int DEFAULT_TIMEOUT = 10; //seconds
 
     public ContentDownloader(int poolSize) {
         exService = Executors.newFixedThreadPool(poolSize);
+        timeout = DEFAULT_TIMEOUT;
     }
 
     @Override
@@ -46,23 +51,26 @@ public class ContentDownloader implements IContentDownloader {
             }));
         }
 
-        while(!futureList.isEmpty()) {
-            for (Iterator<Future<String>> it = futureList.iterator(); it.hasNext(); ) {
-                Future<String> task = it.next();
-
-                if (task.isDone()) {
-                    try {
-                        htmlList.add(task.get());
-                        it.remove();
-                    } catch (InterruptedException | ExecutionException e) {
-                        e.printStackTrace();
-                    }
-                }
+        for (Future<String> future: futureList) {
+            try {
+                htmlList.add(future.get(timeout, TimeUnit.SECONDS));
+            } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                e.printStackTrace();
             }
         }
 
-        exService.shutdown();
-
         return htmlList;
+    }
+
+    public void close() {
+        exService.shutdown();
+    }
+
+    public int getTimeout() {
+        return timeout;
+    }
+
+    public void setTimeout(int timeout) {
+        this.timeout = timeout;
     }
 }
