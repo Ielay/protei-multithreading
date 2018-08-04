@@ -57,7 +57,7 @@ public class LineMatcher {
                         builder.append(System.lineSeparator());
                     }
 
-                    lineBlockQueue.offer(builder.toString(), 5, TimeUnit.SECONDS);
+                    lineBlockQueue.offer(builder.toString(), 3, TimeUnit.SECONDS);
                 }
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
@@ -76,7 +76,7 @@ public class LineMatcher {
                 try {
                     String lineBlock;
 
-                    while ((lineBlock = lineBlockQueue.poll(7, TimeUnit.SECONDS)) != null) {
+                    while ((lineBlock = lineBlockQueue.poll(5, TimeUnit.SECONDS)) != null) {
 
                         Scanner scanner = new Scanner(lineBlock);
                         scanner.useDelimiter(Pattern.compile("[\\r\\n]+"));
@@ -85,7 +85,7 @@ public class LineMatcher {
                             String line = scanner.next();
 
                             if (pattern.matcher(line).find()) {
-                                matchedLineQueue.offer(line, 7, TimeUnit.SECONDS);
+                                matchedLineQueue.offer(line, 5, TimeUnit.SECONDS);
                             }
                         }
                     }
@@ -99,13 +99,13 @@ public class LineMatcher {
         //force main thread to write data to out file
         try (FileWriter writer = new FileWriter(new File(outPath))) {
             while(true) {
-                String matchedLine = matchedLineQueue.poll(5, TimeUnit.SECONDS);
+                String matchedLine = matchedLineQueue.poll(3, TimeUnit.SECONDS);
 
                 if (matchedLine == null) {
                     break;
                 }
 
-                System.out.println(matchedLine);
+                //System.out.println(matchedLine);
 
                 writer.write(matchedLine);
                 writer.write(System.lineSeparator());
