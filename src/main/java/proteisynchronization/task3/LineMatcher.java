@@ -45,36 +45,6 @@ public class LineMatcher {
                           String sourcePath,
                           String outPath,
                           boolean saveLinesOrder) {
-        //prepare the tasks
-        List<Callable<List<String>>> taskList = new ArrayList<>(numberOfCheckingThreads);
-
-        for (int i = 0; i < numberOfCheckingThreads; ++i) {
-            taskList.add(() -> {
-                Pattern pattern = Pattern.compile(regularExpression);
-
-                String lineBlock = lineBlockQueue.poll(3, TimeUnit.SECONDS);
-
-                if (lineBlock == null) {
-                    return null;
-                }
-
-                Scanner scanner = new Scanner(lineBlock);
-                scanner.useDelimiter(Pattern.compile("[\\r\\n]+"));
-
-                List<String> matchedLinesList = new ArrayList<>();
-
-                while (scanner.hasNext()) {
-                    String line = scanner.next();
-
-                    if (pattern.matcher(line).find()) {
-                        matchedLinesList.add(line);
-                    }
-                }
-
-                return matchedLinesList;
-            });
-        }
-
         //run reader thread
         reader.readBlocks(sourcePath, blockSize);
 
@@ -85,19 +55,87 @@ public class LineMatcher {
         boolean stopFlag = false;
 
         try {
-            while (!stopFlag) {
-                List<Future<List<String>>> futureList = exService.invokeAll(taskList, 4, TimeUnit.SECONDS);
+            if (saveLinesOrder) {
+                //prepare the tasks
+                List<Callable<List<String>>> taskList = new ArrayList<>(numberOfCheckingThreads);
 
-                for (Future<List<String>> future: futureList) {
-                    List<String> matcherResultList = future.get();
+                for (int i = 0; i < numberOfCheckingThreads; ++i) {
+                    taskList.add(() -> {
+                        Pattern pattern = Pattern.compile(regularExpression);
 
-                    if (matcherResultList == null) {
-                        stopFlag = true;
-                        break;
+                        String lineBlock = lineBlockQueue.poll(3, TimeUnit.SECONDS);
+
+                        if (lineBlock == null) {
+                            return null;
+                        }
+
+                        Scanner scanner = new Scanner(lineBlock);
+                        scanner.useDelimiter(Pattern.compile("[\\r\\n]+"));
+
+                        List<String> matchedLinesList = new ArrayList<>();
+
+                        while (scanner.hasNext()) {
+                            String line = scanner.next();
+
+                            if (pattern.matcher(line).find()) {
+                                matchedLinesList.add(line);
+                            }
+                        }
+
+                        return matchedLinesList;
+                    });
+                }
+
+                //run the tasks
+                while (!stopFlag) {
+                    List<Future<List<String>>> futureList = exService.invokeAll(taskList, 4, TimeUnit.SECONDS);
+
+                    for (Future<List<String>> future : futureList) {
+                        List<String> matcherResultList = future.get();
+
+                        if (matcherResultList == null) {
+                            stopFlag = true;
+                            break;
+                        }
+
+                        for (String line : matcherResultList) {
+                            matchedLineQueue.offer(line, 2, TimeUnit.SECONDS);
+                        }
                     }
+                }
+            }
+            else {
+                List<Future> futureList = new ArrayList<>(numberOfCheckingThreads);
 
-                    for (String line: matcherResultList) {
-                        matchedLineQueue.offer(line, 2, TimeUnit.SECONDS);
+                for (int i = 0; i < numberOfCheckingThreads; ++i) {
+                    futureList.add(exService.submit(() -> {
+                        Pattern pattern = Pattern.compile(regularExpression);
+
+                        try {
+                            String lineBlock;
+
+                            while ((lineBlock = lineBlockQueue.poll(3, TimeUnit.SECONDS)) != null) {
+                                Scanner scanner = new Scanner(lineBlock);
+                                scanner.useDelimiter(Pattern.compile("[\\r\\n]+"));
+
+                                while (scanner.hasNext()) {
+                                    String line = scanner.next();
+
+                                    if (pattern.matcher(line).find()) {
+                                        matchedLineQueue.offer(line, 3, TimeUnit.SECONDS);
+                                    }
+                                }
+                            }
+                        } catch (InterruptedException e) {
+                            System.out.println("Thread is interrupted");
+                            e.printStackTrace();
+                        }
+                    }));
+                }
+
+                for (Future future: futureList) {
+                    while (!future.isDone() && !future.isCancelled()) {
+                        Thread.sleep(1000);
                     }
                 }
             }
