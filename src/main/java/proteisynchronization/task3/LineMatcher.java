@@ -1,9 +1,5 @@
 package proteisynchronization.task3;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
@@ -14,7 +10,6 @@ import java.util.regex.Pattern;
  * @author lelay
  */
 public class LineMatcher {
-
     private final int DEFAULT_CAPACITY = 100;
 
     private final int DEFAULT_BLOCK_SIZE = 50;
@@ -27,11 +22,22 @@ public class LineMatcher {
 
     private final BlockingQueue<String> matchedLineQueue;
 
-    public LineMatcher(){
+    private final BlockReader reader;
+
+    private final LineWriter writer;
+
+    private final ExecutorService exService;
+
+    public LineMatcher() {
+        blockSize = DEFAULT_BLOCK_SIZE;
+
+        exService = Executors.newCachedThreadPool();
+
         lineBlockQueue = new ArrayBlockingQueue<>(DEFAULT_CAPACITY, DEFAULT_FAIR);
         matchedLineQueue = new ArrayBlockingQueue<>(DEFAULT_BLOCK_SIZE * DEFAULT_CAPACITY);
 
-        blockSize = DEFAULT_BLOCK_SIZE;
+        reader = new BlockReader(lineBlockQueue);
+        writer = new LineWriter(matchedLineQueue);
     }
 
     public void matchLine(int numberOfCheckingThreads,
@@ -39,97 +45,79 @@ public class LineMatcher {
                           String sourcePath,
                           String outPath,
                           boolean saveLinesOrder) {
-
-        ExecutorService exService = Executors.newFixedThreadPool(numberOfCheckingThreads + 1);
-
-        //run a reader thread
-        Future readerThread = exService.submit(() -> {
-            try (Scanner scanner = new Scanner(new File(sourcePath))) {
-                while (scanner.hasNext()) {
-                    StringBuilder builder = new StringBuilder("");
-
-                    for (int i = 0; i < blockSize; ++i) {
-                        if (!scanner.hasNext()) {
-                            break;
-                        }
-
-                        builder.append(scanner.nextLine());
-                        builder.append(System.lineSeparator());
-                    }
-
-                    lineBlockQueue.offer(builder.toString(), 3, TimeUnit.SECONDS);
-                }
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        });
-
-        //run the n of matcher threads
-        List<Future> matcherThreadList = new ArrayList<>(numberOfCheckingThreads);
+        //prepare the tasks
+        List<Callable<List<String>>> taskList = new ArrayList<>(numberOfCheckingThreads);
 
         for (int i = 0; i < numberOfCheckingThreads; ++i) {
-            matcherThreadList.add(exService.submit(() -> {
+            taskList.add(() -> {
                 Pattern pattern = Pattern.compile(regularExpression);
 
-                try {
-                    String lineBlock;
+                String lineBlock = lineBlockQueue.poll(3, TimeUnit.SECONDS);
 
-                    while ((lineBlock = lineBlockQueue.poll(5, TimeUnit.SECONDS)) != null) {
-
-                        Scanner scanner = new Scanner(lineBlock);
-                        scanner.useDelimiter(Pattern.compile("[\\r\\n]+"));
-
-                        while (scanner.hasNext()) {
-                            String line = scanner.next();
-
-                            if (pattern.matcher(line).find()) {
-                                matchedLineQueue.offer(line, 5, TimeUnit.SECONDS);
-                            }
-                        }
-                    }
-                } catch (InterruptedException e) {
-                    System.out.println("Thread is interrupted");
-                    e.printStackTrace();
+                if (lineBlock == null) {
+                    return null;
                 }
-            }));
+
+                Scanner scanner = new Scanner(lineBlock);
+                scanner.useDelimiter(Pattern.compile("[\\r\\n]+"));
+
+                List<String> matchedLinesList = new ArrayList<>();
+
+                while (scanner.hasNext()) {
+                    String line = scanner.next();
+
+                    if (pattern.matcher(line).find()) {
+                        matchedLinesList.add(line);
+                    }
+                }
+
+                return matchedLinesList;
+            });
         }
 
-        //force main thread to write data to out file
-        try (FileWriter writer = new FileWriter(new File(outPath))) {
-            while(true) {
-                String matchedLine = matchedLineQueue.poll(3, TimeUnit.SECONDS);
+        //run reader thread
+        reader.readBlocks(sourcePath, blockSize);
 
-                if (matchedLine == null) {
-                    break;
+        //run writer thread
+        writer.writeLines(outPath);
+
+        //run matcher threads
+        boolean stopFlag = false;
+
+        try {
+            while (!stopFlag) {
+                List<Future<List<String>>> futureList = exService.invokeAll(taskList, 4, TimeUnit.SECONDS);
+
+                for (Future<List<String>> future: futureList) {
+                    List<String> matcherResultList = future.get();
+
+                    if (matcherResultList == null) {
+                        stopFlag = true;
+                        break;
+                    }
+
+                    for (String line: matcherResultList) {
+                        matchedLineQueue.offer(line, 2, TimeUnit.SECONDS);
+                    }
                 }
-
-                //System.out.println(matchedLine);
-
-                writer.write(matchedLine);
-                writer.write(System.lineSeparator());
-
-                writer.flush();
             }
         } catch (InterruptedException e) {
             e.printStackTrace();
-        } catch (IOException e) {
+        } catch (ExecutionException e) {
             e.printStackTrace();
         }
+    }
 
-        //waiting for threads finished the work and then shutdown the ExecutorService
-
-        while(!readerThread.isDone() && !readerThread.isCancelled()) {
-            //do nothing
-        }
-
-        for (Future<String> matcherFuture: matcherThreadList) {
-            while (!matcherFuture.isDone() && !matcherFuture.isCancelled()) {
-                //do nothing
-            }
-        }
+    public void close() {
+        reader.close();
+        writer.close();
 
         exService.shutdown();
+
+        try {
+            exService.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
 }

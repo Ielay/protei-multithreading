@@ -1,8 +1,5 @@
 package proteisynchronization.task3;
 
-import java.time.LocalDateTime;
-import java.util.Date;
-
 /**
  * @author lelay
  */
@@ -19,5 +16,7 @@ public class App {
                     false);
             System.out.println(System.currentTimeMillis() - startTime  + " Millis");
         }
+
+        matcher.close();
     }
 }
